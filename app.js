@@ -156,7 +156,7 @@ function lookupTimezoneAt(lon, lat, polygonIndex) {
 }
 
 const map = new maplibregl.Map({
-    style: 'https://tiles.openfreemap.org/styles/liberty',
+    style: 'https://tiles.openfreemap.org/styles/positron',
     center: [13, 25],
     zoom: 2,
     maxZoom: 10,
@@ -173,27 +173,27 @@ function normalizeLon(lon) {
     return x;
 }
 
-function mismatchToColor(absDiffHours) {
-    const d = clamp(absDiffHours, 0, 2.5);
+function mismatchToColor(diffHours) {
+    const d = clamp(diffHours, -2, 2);
     const lerp = (a, b, t) => Math.round(a + (b - a) * t);
-    const green = [76, 175, 80];
-    const amber = [255, 193, 7];
-    const red = [244, 67, 54];
+    const vividRed = [255, 20, 20];
+    const white = [255, 255, 255];
+    const vividGreen = [0, 220, 80];
 
-    if (d <= 1.25) {
-        const t = d / 1.25;
+    if (d <= 0) {
+        const t = (d + 2) / 2;
         return [
-            lerp(green[0], amber[0], t),
-            lerp(green[1], amber[1], t),
-            lerp(green[2], amber[2], t),
+            lerp(vividGreen[0], white[0], t),
+            lerp(vividGreen[1], white[1], t),
+            lerp(vividGreen[2], white[2], t),
         ];
     }
 
-    const t = (d - 1.25) / 1.25;
+    const t = d / 2;
     return [
-        lerp(amber[0], red[0], t),
-        lerp(amber[1], red[1], t),
-        lerp(amber[2], red[2], t),
+        lerp(white[0], vividRed[0], t),
+        lerp(white[1], vividRed[1], t),
+        lerp(white[2], vividRed[2], t),
     ];
 }
 
@@ -242,14 +242,14 @@ function installSolarTileProtocol(polygonIndex) {
                 const [lon, lat] = tilePixelToLonLat(z, x, y, px, py, SAMPLE);
                 const tz = lookupTimezoneAt(lon, lat, polygonIndex);
                 const civil = tz?.civil ?? Math.round(lon / 15);
-                const mismatch = Math.abs(civil - solarOffset(lon, now));
-                const [r, g, b] = mismatchToColor(mismatch);
+                const diff = civil - solarOffset(lon, now);
+                const [r, g, b] = mismatchToColor(diff);
 
                 const i = (py * SAMPLE + px) * 4;
                 image.data[i] = r;
                 image.data[i + 1] = g;
                 image.data[i + 2] = b;
-                image.data[i + 3] = 155;
+                image.data[i + 3] = 220;
             }
         }
 
@@ -283,13 +283,59 @@ map.on('load', async () => {
         maxzoom: 10,
     });
 
+    map.addSource('timezone-borders', {
+        type: 'geojson',
+        data: tzData,
+    });
+
     map.addLayer({
         id: 'solar-heat-layer',
         type: 'raster',
         source: 'solar-heat',
         paint: {
-            'raster-opacity': 0.62,
+            'raster-opacity': 0.86,
             'raster-resampling': 'linear',
+        },
+    }, insertBefore);
+
+    map.addLayer({
+        id: 'timezone-border-casing',
+        type: 'line',
+        source: 'timezone-borders',
+        layout: {
+            'line-cap': 'round',
+            'line-join': 'round',
+        },
+        paint: {
+            'line-color': 'rgba(255, 255, 255, 0.45)',
+            'line-width': [
+                'interpolate', ['linear'], ['zoom'],
+                0, 0.5,
+                3, 0.8,
+                6, 1.2,
+                10, 1.8,
+            ],
+            'line-blur': 0.3,
+        },
+    }, insertBefore);
+
+    map.addLayer({
+        id: 'timezone-border-line',
+        type: 'line',
+        source: 'timezone-borders',
+        layout: {
+            'line-cap': 'round',
+            'line-join': 'round',
+        },
+        paint: {
+            'line-color': 'rgba(20, 24, 32, 0.55)',
+            'line-width': [
+                'interpolate', ['linear'], ['zoom'],
+                0, 0.2,
+                3, 0.35,
+                6, 0.65,
+                10, 1.0,
+            ],
         },
     }, insertBefore);
 
