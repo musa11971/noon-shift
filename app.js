@@ -159,6 +159,7 @@ const map = new maplibregl.Map({
     style: 'https://tiles.openfreemap.org/styles/liberty',
     center: [13, 25],
     zoom: 2,
+    maxZoom: 10,
     container: 'map',
 });
 
