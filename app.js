@@ -44,10 +44,6 @@ function formatDiff(diffHours) {
     return `clock is ${hm} ${diffHours > 0 ? 'ahead of' : 'behind'} solar time`;
 }
 
-function clamp(v, lo, hi) {
-    return Math.max(lo, Math.min(hi, v));
-}
-
 function ringBBox(ring) {
     let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
     for (const p of ring) {
@@ -173,43 +169,102 @@ function normalizeLon(lon) {
     return x;
 }
 
-function mismatchToColor(diffHours) {
-    const d = clamp(diffHours, -2, 2);
-    const lerp = (a, b, t) => Math.round(a + (b - a) * t);
-    const vividRed = [255, 20, 20];
-    const white = [255, 255, 255];
-    const vividGreen = [0, 220, 80];
-
-    if (d <= 0) {
-        const t = (d + 2) / 2;
-        return [
-            lerp(vividGreen[0], white[0], t),
-            lerp(vividGreen[1], white[1], t),
-            lerp(vividGreen[2], white[2], t),
-        ];
-    }
-
-    const t = d / 2;
-    return [
-        lerp(white[0], vividRed[0], t),
-        lerp(white[1], vividRed[1], t),
-        lerp(white[2], vividRed[2], t),
-    ];
+function serializePolygonIndex(polygonIndex) {
+    return {
+        binSize: 5,
+        polygons: polygonIndex.polygons,
+        binsEntries: Array.from(polygonIndex.bins.entries()),
+    };
 }
 
-function tilePixelToLonLat(z, x, y, px, py, tileSize) {
-    const n = 2 ** z;
-    const worldX = x + (px + 0.5) / tileSize;
-    const worldY = y + (py + 0.5) / tileSize;
-    const lon = (worldX / n) * 360 - 180;
-    const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * worldY) / n)));
-    return [normalizeLon(lon), latRad * (180 / Math.PI)];
+function createSolarTileWorkerClient(polygonIndex) {
+    const cpuCount = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+    const workerCount = Math.max(2, Math.min(4, cpuCount - 1));
+    const workers = [];
+    let requestSeq = 0;
+
+    const indexPayload = serializePolygonIndex(polygonIndex);
+    for (let i = 0; i < workerCount; i++) {
+        const w = new Worker('solar-tile-worker.js');
+        const state = { worker: w, pending: new Map(), active: 0 };
+
+        w.onmessage = event => {
+            const msg = event.data;
+            const req = state.pending.get(msg?.requestId);
+            if (!req) return;
+
+            state.pending.delete(msg.requestId);
+            state.active = Math.max(0, state.active - 1);
+
+            if (msg?.type === 'tile') {
+                req.resolve({ data: msg.buffer });
+                return;
+            }
+            if (msg?.type === 'canceled') {
+                req.reject(new Error('Tile request canceled'));
+                return;
+            }
+            req.reject(new Error(msg?.error || 'Worker tile render failed'));
+        };
+
+        w.onerror = event => {
+            const err = new Error(event.message || 'Worker failed');
+            for (const req of state.pending.values()) req.reject(err);
+            state.pending.clear();
+            state.active = 0;
+        };
+
+        w.postMessage({ type: 'init', payload: indexPayload });
+        workers.push(state);
+    }
+
+    const pickWorker = () => {
+        let best = workers[0];
+        for (let i = 1; i < workers.length; i++) {
+            if (workers[i].active < best.active) best = workers[i];
+        }
+        return best;
+    };
+
+    const requestTile = (z, x, y, dayKey, generation) => new Promise((resolve, reject) => {
+        requestSeq += 1;
+        const requestId = requestSeq;
+        const target = pickWorker();
+        target.pending.set(requestId, { resolve, reject });
+        target.active += 1;
+        target.worker.postMessage({
+            type: 'render-tile',
+            requestId,
+            z,
+            x,
+            y,
+            dayKey,
+            generation,
+        });
+    });
+
+    const cancelBeforeGeneration = generation => {
+        for (const s of workers) {
+            s.worker.postMessage({ type: 'cancel-before-generation', generation });
+        }
+    };
+
+    return { requestTile, cancelBeforeGeneration };
 }
 
 function installSolarTileProtocol(polygonIndex) {
-    const TILE_SIZE = 256;
-    const SAMPLE = 64;
-    const tileCache = new Map();
+    const workerClient = createSolarTileWorkerClient(polygonIndex);
+    const inFlight = new Map();
+    let generation = 0;
+
+    const advanceGeneration = () => {
+        generation += 1;
+        inFlight.clear();
+        workerClient.cancelBeforeGeneration(generation);
+    };
+
+    map.on('movestart', advanceGeneration);
+    map.on('zoomstart', advanceGeneration);
 
     maplibregl.addProtocol('solar', async params => {
         const match = params.url.match(/^solar:\/\/(\d+)\/(\d+)\/(\d+)\.png$/);
@@ -219,53 +274,20 @@ function installSolarTileProtocol(polygonIndex) {
         const x = parseInt(match[2], 10);
         const y = parseInt(match[3], 10);
         const dayKey = new Date().toISOString().slice(0, 10);
-        const cacheKey = `${dayKey}:${z}/${x}/${y}`;
+        const key = `${generation}:${dayKey}:${z}/${x}/${y}`;
 
-        if (tileCache.has(cacheKey)) {
-            return { data: tileCache.get(cacheKey) };
-        }
+        if (inFlight.has(key)) return inFlight.get(key);
 
-        const canvas = document.createElement('canvas');
-        canvas.width = TILE_SIZE;
-        canvas.height = TILE_SIZE;
-        const ctx = canvas.getContext('2d');
-
-        const lowCanvas = document.createElement('canvas');
-        lowCanvas.width = SAMPLE;
-        lowCanvas.height = SAMPLE;
-        const lowCtx = lowCanvas.getContext('2d');
-        const image = lowCtx.createImageData(SAMPLE, SAMPLE);
-        const now = new Date();
-
-        for (let py = 0; py < SAMPLE; py++) {
-            for (let px = 0; px < SAMPLE; px++) {
-                const [lon, lat] = tilePixelToLonLat(z, x, y, px, py, SAMPLE);
-                const tz = lookupTimezoneAt(lon, lat, polygonIndex);
-                const civil = tz?.civil ?? Math.round(lon / 15);
-                const diff = civil - solarOffset(lon, now);
-                const [r, g, b] = mismatchToColor(diff);
-
-                const i = (py * SAMPLE + px) * 4;
-                image.data[i] = r;
-                image.data[i + 1] = g;
-                image.data[i + 2] = b;
-                image.data[i + 3] = 220;
-            }
-        }
-
-        lowCtx.putImageData(image, 0, 0);
-        ctx.imageSmoothingEnabled = true;
-        ctx.drawImage(lowCanvas, 0, 0, TILE_SIZE, TILE_SIZE);
-
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-        const buffer = await blob.arrayBuffer();
-        tileCache.set(cacheKey, buffer);
-
-        return { data: buffer };
+        const promise = workerClient
+            .requestTile(z, x, y, dayKey, generation)
+            .finally(() => inFlight.delete(key));
+        inFlight.set(key, promise);
+        return promise;
     });
 }
 
 map.on('load', async () => {
+    // todo: should probs pull this file in and serve "locally"
     const res = await fetch(
         'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_time_zones.geojson'
     );
