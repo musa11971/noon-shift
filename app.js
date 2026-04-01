@@ -157,6 +157,7 @@ const map = new maplibregl.Map({
     zoom: 2,
     maxZoom: 10,
     container: 'map',
+    attributionControl: false,
 });
 map.dragRotate.disable();
 map.keyboard.disable();
