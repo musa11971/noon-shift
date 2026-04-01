@@ -158,6 +158,9 @@ const map = new maplibregl.Map({
     maxZoom: 10,
     container: 'map',
 });
+map.dragRotate.disable();
+map.keyboard.disable();
+map.touchZoomRotate.disableRotation();
 
 const infoBar = document.getElementById('info-bar');
 const loading = document.getElementById('loading');
