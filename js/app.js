@@ -189,7 +189,7 @@ function createSolarTileWorkerClient(polygonIndex) {
 
     const indexPayload = serializePolygonIndex(polygonIndex);
     for (let i = 0; i < workerCount; i++) {
-        const w = new Worker('solar-tile-worker.js');
+        const w = new Worker('/js/solar-tile-worker.js');
         const state = { worker: w, pending: new Map(), active: 0 };
 
         w.onmessage = event => {
@@ -291,9 +291,8 @@ function installSolarTileProtocol(polygonIndex) {
 }
 
 map.on('load', async () => {
-    // todo: should probs pull this file in and serve "locally"
     const res = await fetch(
-        'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_time_zones.geojson'
+        '/js/ne_10m_time_zones.geojson'
     );
     const tzData = await res.json();
     const polygonIndex = buildPolygonIndex(tzData);
