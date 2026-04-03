@@ -11,12 +11,12 @@ function solarOffset(lon, d) {
     return lon / 15 + equationOfTime(d) / 60;
 }
 
-function civilOffset(tzid) {
+function civilOffset(tzid, date = new Date()) {
     try {
         const parts = Intl.DateTimeFormat('en', {
             timeZone: tzid,
             timeZoneName: 'shortOffset',
-        }).formatToParts(new Date());
+        }).formatToParts(date);
         const tz = parts.find(p => p.type === 'timeZoneName')?.value ?? '';
         if (tz === 'GMT') return 0;
         const m = tz.match(/GMT([+-])(\d+)(?::(\d+))?/);
@@ -42,6 +42,33 @@ function formatDiff(diffHours) {
     const m = Math.round((abs - h) * 60);
     const hm = [h ? `${h}h` : '', m ? `${m}m` : ''].filter(Boolean).join(' ');
     return `clock is ${hm} ${diffHours > 0 ? 'ahead of' : 'behind'} solar time`;
+}
+
+function formatUtcOffset(offsetHours) {
+    const sign = offsetHours >= 0 ? '+' : '-';
+    const abs = Math.abs(offsetHours);
+    const h = Math.floor(abs);
+    const m = Math.round((abs - h) * 60);
+    return `UTC${sign}${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function timePartsFromOffset(now, offsetHours) {
+    const shifted = new Date(now.getTime() + offsetHours * 3600000);
+    return {
+        hours: shifted.getUTCHours(),
+        minutes: shifted.getUTCMinutes(),
+    };
+}
+
+function handAnglesFromParts(parts) {
+    const hourAngle = (parts.hours % 12 + parts.minutes / 60) * 30;
+    const minuteAngle = parts.minutes * 6;
+    return { hourAngle, minuteAngle };
+}
+
+function handTransform(angle) {
+    // Offset by -90deg because 0deg points to the right; 12 o'clock should point up.
+    return `translate(0, -50%) rotate(${angle - 90}deg)`;
 }
 
 function ringBBox(ring) {
@@ -165,6 +192,101 @@ map.touchZoomRotate.disableRotation();
 
 const infoBar = document.getElementById('info-bar');
 const loading = document.getElementById('loading');
+const sidebar = document.getElementById('sidebar');
+const sidebarClose = document.getElementById('sidebar-close');
+const sidebarTitle = document.getElementById('sidebar-title');
+const sidebarBody = document.getElementById('sidebar-body');
+const shareButtons = Array.from(document.querySelectorAll('[data-share]'));
+const shareCopyButton = document.getElementById('share-copy');
+let activeMarker = null;
+let drawerStartY = null;
+let drawerLastY = null;
+let lastSharedCoords = null;
+
+const shareMessageForUrl = url =>
+    `Check out this location on Noon Shift: clock time vs. solar time ${url}`;
+
+const buildLocationUrl = (lat, lon) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('lat', lat.toFixed(5));
+    url.searchParams.set('lon', lon.toFixed(5));
+    return url.toString();
+};
+
+const updateUrlFromCoords = (lat, lon) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('lat', lat.toFixed(5));
+    url.searchParams.set('lon', lon.toFixed(5));
+    history.replaceState(null, '', url.toString());
+};
+
+const clearUrlCoords = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('lat');
+    url.searchParams.delete('lon');
+    history.replaceState(null, '', url.toString());
+};
+
+const parseCoordsFromUrl = () => {
+    const params = new URLSearchParams(window.location.search);
+    const lat = parseFloat(params.get('lat'));
+    const lon = parseFloat(params.get('lon'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+    return { lat, lon };
+};
+
+const setShareEnabled = enabled => {
+    const toggle = (el, isEnabled) => {
+        if (isEnabled) {
+            el.classList.remove('disabled');
+            el.removeAttribute('aria-disabled');
+        } else {
+            el.classList.add('disabled');
+            el.setAttribute('aria-disabled', 'true');
+            if (el.tagName === 'A') el.removeAttribute('href');
+        }
+    };
+    shareButtons.forEach(btn => toggle(btn, enabled));
+    if (shareCopyButton) toggle(shareCopyButton, enabled);
+};
+
+const updateShareLinks = (lat, lon) => {
+    const locationUrl = buildLocationUrl(lat, lon);
+    const message = shareMessageForUrl(locationUrl);
+
+    shareButtons.forEach(button => {
+        const network = button.dataset.share;
+        let href = locationUrl;
+        if (network === 'x') {
+            href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(message)}`;
+        } else if (network === 'whatsapp') {
+            href = `whatsapp://send?text=${encodeURIComponent(message)}`;
+        }
+        button.setAttribute('href', href);
+    });
+
+    if (shareCopyButton) {
+        shareCopyButton.dataset.shareMessage = message;
+    }
+    setShareEnabled(true);
+    lastSharedCoords = { lat, lon };
+};
+
+setShareEnabled(false);
+
+if (shareCopyButton) {
+    shareCopyButton.addEventListener('click', async () => {
+        navigator.clipboard.writeText(shareCopyButton.dataset.text);
+    });
+}
+
+const setDrawerState = state => {
+    sidebar.classList.remove('drawer-expanded', 'drawer-collapsed');
+    if (state) sidebar.classList.add(state);
+};
+
+const isMobileDrawer = () => window.matchMedia('(max-width: 720px)').matches;
 
 function normalizeLon(lon) {
     let x = lon;
@@ -404,4 +526,172 @@ map.on('load', async () => {
         map.getCanvas().style.cursor = '';
         infoBar.classList.remove('visible');
     });
+
+    const openSidebarAt = (lon, lat, options = {}) => {
+        const nowLocal = new Date();
+        const match = lookupTimezoneAt(lon, lat, polygonIndex);
+        if (!match) return false;
+
+        const civil = match.civil;
+        const solar = solarOffset(lon, nowLocal);
+        const diff = civil - solar;
+        const diffMinutes = Math.round(diff * 60);
+        const clockParts = timePartsFromOffset(nowLocal, civil);
+        const solarParts = timePartsFromOffset(nowLocal, solar);
+        const clockAngles = handAnglesFromParts(clockParts);
+        const solarAngles = handAnglesFromParts(solarParts);
+
+        const isDst = (() => {
+            try {
+                const year = nowLocal.getFullYear();
+                const jan = new Date(year, 0, 1);
+                const jul = new Date(year, 6, 1);
+                const janOffset = civilOffset(match.tzid, jan);
+                const julOffset = civilOffset(match.tzid, jul);
+                return janOffset !== julOffset;
+            } catch {
+                return false;
+            }
+        })();
+
+        const zoneLabel = match.tzid || match.utcFormat || 'Local solar region';
+        sidebarTitle.textContent = 'Clicked pin location';
+
+        const gaugeRangeMinutes = 120;
+        const clampedMinutes = Math.max(-gaugeRangeMinutes, Math.min(gaugeRangeMinutes, diffMinutes));
+        const gaugePercent = ((clampedMinutes + gaugeRangeMinutes) / (2 * gaugeRangeMinutes)) * 100;
+
+        let bodyHtml = `
+            <div class="time-visual">
+                <div class="clock-block">
+                    <div class="clock-face">
+                        <div class="clock-hand hour" style="transform: ${handTransform(clockAngles.hourAngle)};"></div>
+                        <div class="clock-hand minute" style="transform: ${handTransform(clockAngles.minuteAngle)};"></div>
+                        <div class="clock-center"></div>
+                    </div>
+                    <div class="clock-caption">Clock time</div>
+                    <div class="clock-time">${formatHmFromOffset(nowLocal, civil)}</div>
+                    <div class="clock-sub">${formatUtcOffset(civil)}</div>
+                </div>
+                <div class="clock-block">
+                    <div class="clock-face solar">
+                        <div class="clock-hand hour" style="transform: ${handTransform(solarAngles.hourAngle)};"></div>
+                        <div class="clock-hand minute" style="transform: ${handTransform(solarAngles.minuteAngle)};"></div>
+                        <div class="clock-center"></div>
+                    </div>
+                    <div class="clock-caption">Solar time</div>
+                    <div class="clock-time">${formatHmFromOffset(nowLocal, solar)}</div>
+                    <div class="clock-sub">sun-based</div>
+                </div>
+            </div>
+            <div class="delta-gauge">
+                <div class="delta-track"></div>
+                <div class="delta-center"></div>
+                <div class="delta-marker" style="left: ${gaugePercent}%;"></div>
+                <div class="delta-labels"><span>-2h</span><span>0</span><span>+2h</span></div>
+                <div class="delta-caption">${formatDiff(diff)}</div>
+            </div>
+        `;
+
+        const addRow = (label, value) => {
+            bodyHtml += `<div class="data-row"><span class="data-label">${label}</span><span class="data-value">${value}</span></div>`;
+        };
+
+        addRow('Timezone', zoneLabel);
+        addRow('Latitude', `${lat.toFixed(2)}°`);
+        addRow('Longitude', `${lon.toFixed(2)}°`);
+        addRow('Clock Offset', formatUtcOffset(civil));
+        addRow('DST Observed', isDst ? 'Yes' : 'No');
+
+        let explanation = '';
+        if (Math.abs(diff) > 0.5) {
+            if (diff > 0) {
+                explanation = 'Clock time runs ahead of the sun here. That pushes daylight later into the evening, so sunsets tend to feel late.';
+            } else {
+                explanation = 'The sun leads the clock here. That pulls daylight earlier into the morning, so sunrises arrive sooner.';
+            }
+        } else {
+            explanation = 'Clock time and solar time are closely aligned here. Local noon happens near 12:00 on the clock.';
+        }
+        if (isDst) {
+            explanation += ' This region also shifts its clocks seasonally, which can add another hour of offset part of the year.';
+        }
+        bodyHtml += `<div class="explanation">${explanation}</div>`;
+
+        sidebarBody.innerHTML = bodyHtml;
+        sidebar.classList.add('open');
+        if (isMobileDrawer()) setDrawerState('drawer-collapsed');
+
+        if (!activeMarker) {
+            activeMarker = new maplibregl.Marker({ color: '#1c2430' })
+                .setLngLat([lon, lat])
+                .addTo(map);
+        } else {
+            activeMarker.setLngLat([lon, lat]);
+        }
+
+        updateShareLinks(lat, lon);
+        if (options.updateUrl !== false) {
+            updateUrlFromCoords(lat, lon);
+        }
+        return true;
+    };
+
+    map.on('click', e => {
+        openSidebarAt(e.lngLat.lng, e.lngLat.lat);
+    });
+
+    const closeSidebar = () => {
+        sidebar.classList.remove('open');
+        setDrawerState(null);
+        if (activeMarker) {
+            activeMarker.remove();
+            activeMarker = null;
+        }
+        clearUrlCoords();
+        lastSharedCoords = null;
+        setShareEnabled(false);
+    };
+
+    sidebarClose.onclick = closeSidebar;
+
+    sidebar.addEventListener('touchstart', event => {
+        if (!isMobileDrawer()) return;
+        if (!event.touches?.length) return;
+        drawerStartY = event.touches[0].clientY;
+        drawerLastY = drawerStartY;
+    }, { passive: true });
+
+    sidebar.addEventListener('touchmove', event => {
+        if (!isMobileDrawer()) return;
+        if (!event.touches?.length) return;
+        drawerLastY = event.touches[0].clientY;
+    }, { passive: true });
+
+    sidebar.addEventListener('touchend', () => {
+        if (!isMobileDrawer()) return;
+        if (drawerStartY === null || drawerLastY === null) return;
+        const delta = drawerLastY - drawerStartY;
+        const threshold = 50;
+
+        if (delta < -threshold) {
+            setDrawerState('drawer-expanded');
+        } else if (delta > threshold) {
+            if (sidebar.classList.contains('drawer-expanded')) {
+                setDrawerState('drawer-collapsed');
+            } else {
+                closeSidebar();
+            }
+        }
+        drawerStartY = null;
+        drawerLastY = null;
+    });
+
+    const urlCoords = parseCoordsFromUrl();
+    if (urlCoords) {
+        const { lat, lon } = urlCoords;
+        map.setCenter([lon, lat]);
+        map.setZoom(6);
+        openSidebarAt(lon, lat, { updateUrl: false });
+    }
 });
