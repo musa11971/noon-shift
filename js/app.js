@@ -555,7 +555,7 @@ map.on('load', async () => {
         })();
 
         const zoneLabel = match.tzid || match.utcFormat || 'Local solar region';
-        sidebarTitle.textContent = 'Clicked pin location';
+        sidebarTitle.textContent = 'Marker location';
 
         const gaugeRangeMinutes = 120;
         const clampedMinutes = Math.max(-gaugeRangeMinutes, Math.min(gaugeRangeMinutes, diffMinutes));
