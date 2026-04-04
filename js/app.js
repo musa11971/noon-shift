@@ -35,6 +35,15 @@ function formatHmFromOffset(now, offsetHours) {
     return `${hh}:${mm}`;
 }
 
+function formatHmFromMinutes(totalMinutes) {
+    const minutesInDay = 24 * 60;
+    let minutes = Math.round(totalMinutes) % minutesInDay;
+    if (minutes < 0) minutes += minutesInDay;
+    const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
+    const mm = String(minutes % 60).padStart(2, '0');
+    return `${hh}:${mm}`;
+}
+
 function formatDiff(diffHours) {
     const abs = Math.abs(diffHours);
     if (abs < 5 / 60) return 'clock matches solar time';
@@ -196,11 +205,13 @@ const sidebar = document.getElementById('sidebar');
 const sidebarClose = document.getElementById('sidebar-close');
 const sidebarTitle = document.getElementById('sidebar-title');
 const sidebarBody = document.getElementById('sidebar-body');
-const shareButtons = Array.from(document.querySelectorAll('[data-share]'));
-const shareCopyButton = document.getElementById('share-copy');
+const drawerHandle = document.getElementById('drawer-handle');
+const legendAboutButton = document.getElementById('legend-about');
 let activeMarker = null;
 let drawerStartY = null;
 let drawerLastY = null;
+let drawerDragActive = false;
+let drawerStartScrollTop = 0;
 let lastSharedCoords = null;
 
 const shareMessageForUrl = url =>
@@ -236,7 +247,14 @@ const parseCoordsFromUrl = () => {
     return { lat, lon };
 };
 
-const setShareEnabled = enabled => {
+const getShareElements = () => ({
+    buttons: Array.from(sidebarBody.querySelectorAll('[data-share]')),
+    copyButton: sidebarBody.querySelector('#share-copy'),
+});
+
+const setShareEnabled = (enabled, elements = getShareElements()) => {
+    const { buttons, copyButton } = elements;
+    if (!buttons.length && !copyButton) return;
     const toggle = (el, isEnabled) => {
         if (isEnabled) {
             el.classList.remove('disabled');
@@ -247,15 +265,17 @@ const setShareEnabled = enabled => {
             if (el.tagName === 'A') el.removeAttribute('href');
         }
     };
-    shareButtons.forEach(btn => toggle(btn, enabled));
-    if (shareCopyButton) toggle(shareCopyButton, enabled);
+    buttons.forEach(btn => toggle(btn, enabled));
+    if (copyButton) toggle(copyButton, enabled);
 };
 
-const updateShareLinks = (lat, lon) => {
+const updateShareLinks = (lat, lon, elements = getShareElements()) => {
+    const { buttons, copyButton } = elements;
+    if (!buttons.length && !copyButton) return;
     const locationUrl = buildLocationUrl(lat, lon);
     const message = shareMessageForUrl(locationUrl);
 
-    shareButtons.forEach(button => {
+    buttons.forEach(button => {
         const network = button.dataset.share;
         let href = locationUrl;
         if (network === 'x') {
@@ -266,27 +286,82 @@ const updateShareLinks = (lat, lon) => {
         button.setAttribute('href', href);
     });
 
-    if (shareCopyButton) {
-        shareCopyButton.dataset.shareMessage = message;
+    if (copyButton) {
+        copyButton.dataset.shareMessage = message;
+        if (!copyButton.dataset.bound) {
+            copyButton.dataset.bound = 'true';
+            copyButton.addEventListener('click', async () => {
+                const text = copyButton.dataset.shareMessage || locationUrl;
+                await navigator.clipboard.writeText(text);
+            });
+        }
     }
-    setShareEnabled(true);
+    setShareEnabled(true, elements);
     lastSharedCoords = { lat, lon };
 };
 
 setShareEnabled(false);
 
-if (shareCopyButton) {
-    shareCopyButton.addEventListener('click', async () => {
-        navigator.clipboard.writeText(shareCopyButton.dataset.text);
-    });
-}
+const isMobileDrawer = () => window.matchMedia('(max-width: 720px)').matches;
+
+const enableMapInteractions = () => {
+    map.dragPan.enable();
+    map.scrollZoom.enable();
+    map.doubleClickZoom.enable();
+    map.boxZoom.enable();
+    map.touchZoomRotate.enable();
+    map.touchZoomRotate.disableRotation();
+};
+
+const disableMapInteractions = () => {
+    map.dragPan.disable();
+    map.scrollZoom.disable();
+    map.doubleClickZoom.disable();
+    map.boxZoom.disable();
+    map.touchZoomRotate.disable();
+};
+
+const syncDrawerInteractivity = () => {
+    if (!isMobileDrawer()) {
+        enableMapInteractions();
+        return;
+    }
+    if (sidebar.classList.contains('open') && sidebar.classList.contains('drawer-expanded')) {
+        disableMapInteractions();
+    } else {
+        enableMapInteractions();
+    }
+};
 
 const setDrawerState = state => {
     sidebar.classList.remove('drawer-expanded', 'drawer-collapsed');
     if (state) sidebar.classList.add(state);
+    syncDrawerInteractivity();
 };
 
-const isMobileDrawer = () => window.matchMedia('(max-width: 720px)').matches;
+const toggleDrawer = () => {
+    if (!isMobileDrawer()) return;
+    if (!sidebar.classList.contains('open')) return;
+    if (sidebar.classList.contains('drawer-expanded')) {
+        setDrawerState('drawer-collapsed');
+    } else {
+        setDrawerState('drawer-expanded');
+    }
+};
+
+const updateSidebarBody = html => {
+    const shouldAnimate = sidebar.classList.contains('open') && sidebarBody.innerHTML.trim() !== '';
+    if (!shouldAnimate) {
+        sidebarBody.innerHTML = html;
+        return;
+    }
+
+    sidebarBody.classList.add('is-updating');
+    window.setTimeout(() => {
+        sidebarBody.innerHTML = html;
+        requestAnimationFrame(() => sidebarBody.classList.remove('is-updating'));
+    }, 120);
+};
 
 function normalizeLon(lon) {
     let x = lon;
@@ -527,6 +602,41 @@ map.on('load', async () => {
         infoBar.classList.remove('visible');
     });
 
+    const openAboutSidebar = () => {
+        sidebarTitle.textContent = '☀️ About Noon Shift';
+
+        const aboutHtml = `
+            <div class="about">
+                <p>Noon Shift compares clock time to local solar time and visualises it on a map.</p>
+                
+                <h4>How it works</h4>
+                <p>The map colors reflect how far local clock time is ahead or behind solar time. Click anywhere to see more details on that specific region.</p>
+                
+                <h4>Why it changes</h4>
+                <p>Time zones are defined by borders, politics, and daylight-saving rules, not just longitude. That is why two places at the same longitude can still show different offsets.</p>
+                
+                <h4>Support the project</h4>
+                <p>If you enjoy Noon Shift, you can check out and star the project on <a href="https://github.com/musa11971/noon-shift" target="_blank">GitHub</a>, or support me with a small donation.</p>
+                <a href="https://paypal.me/musa11971" target="_blank">
+                    <img src="/img/donate.png" alt="Donate through PayPal" style="max-width: 50%" />
+                </a>
+            </div>
+        `;
+
+        updateSidebarBody(aboutHtml);
+        sidebar.classList.add('open');
+        if (isMobileDrawer()) setDrawerState('drawer-collapsed');
+
+        if (activeMarker) {
+            activeMarker.remove();
+            activeMarker = null;
+        }
+        clearUrlCoords();
+        lastSharedCoords = null;
+        setShareEnabled(false);
+        return true;
+    };
+
     const openSidebarAt = (lon, lat, options = {}) => {
         const nowLocal = new Date();
         const match = lookupTimezoneAt(lon, lat, polygonIndex);
@@ -536,6 +646,7 @@ map.on('load', async () => {
         const solar = solarOffset(lon, nowLocal);
         const diff = civil - solar;
         const diffMinutes = Math.round(diff * 60);
+        const trueNoonTime = formatHmFromMinutes(12 * 60 + diffMinutes);
         const clockParts = timePartsFromOffset(nowLocal, civil);
         const solarParts = timePartsFromOffset(nowLocal, solar);
         const clockAngles = handAnglesFromParts(clockParts);
@@ -600,6 +711,7 @@ map.on('load', async () => {
         addRow('Timezone', zoneLabel);
         addRow('Latitude', `${lat.toFixed(2)}°`);
         addRow('Longitude', `${lon.toFixed(2)}°`);
+        addRow('True Noon Time', trueNoonTime);
         addRow('Clock Offset', formatUtcOffset(civil));
         addRow('DST Observed', isDst ? 'Yes' : 'No');
 
@@ -617,8 +729,18 @@ map.on('load', async () => {
             explanation += ' This region also shifts its clocks seasonally, which can add another hour of offset part of the year.';
         }
         bodyHtml += `<div class="explanation">${explanation}</div>`;
+        bodyHtml += `
+            <div class="share-section no-select">
+                <div class="share-title">Share</div>
+                <div class="share-buttons">
+                    <a class="share-btn" data-share="x" target="_blank" rel="noopener">X</a>
+                    <a class="share-btn" data-share="whatsapp" target="_blank" rel="noopener">WhatsApp</a>
+                    <button class="share-btn" id="share-copy" type="button">Copy link</button>
+                </div>
+            </div>
+        `;
 
-        sidebarBody.innerHTML = bodyHtml;
+        updateSidebarBody(bodyHtml);
         sidebar.classList.add('open');
         if (isMobileDrawer()) setDrawerState('drawer-collapsed');
 
@@ -651,22 +773,46 @@ map.on('load', async () => {
         clearUrlCoords();
         lastSharedCoords = null;
         setShareEnabled(false);
+        syncDrawerInteractivity();
     };
 
     sidebarClose.onclick = closeSidebar;
+
+    if (drawerHandle) {
+        drawerHandle.addEventListener('click', toggleDrawer);
+    }
+
+    if (legendAboutButton) {
+        legendAboutButton.addEventListener('click', () => {
+            openAboutSidebar();
+        });
+    }
 
     sidebar.addEventListener('touchstart', event => {
         if (!isMobileDrawer()) return;
         if (!event.touches?.length) return;
         drawerStartY = event.touches[0].clientY;
         drawerLastY = drawerStartY;
-    }, { passive: true });
+        drawerStartScrollTop = sidebar.scrollTop;
+        drawerDragActive = sidebar.classList.contains('drawer-collapsed') ||
+            !!event.target.closest('#drawer-handle, .sidebar-header');
+        if (sidebar.classList.contains('open')) event.stopPropagation();
+    }, { passive: false });
 
     sidebar.addEventListener('touchmove', event => {
         if (!isMobileDrawer()) return;
         if (!event.touches?.length) return;
+        if (sidebar.classList.contains('open')) event.stopPropagation();
         drawerLastY = event.touches[0].clientY;
-    }, { passive: true });
+        if (!drawerDragActive && sidebar.classList.contains('drawer-expanded') && drawerStartScrollTop <= 0) {
+            if (drawerLastY - drawerStartY > 6) {
+                drawerDragActive = true;
+            }
+        }
+        if (drawerDragActive) {
+            event.preventDefault();
+        }
+    }, { passive: false });
 
     sidebar.addEventListener('touchend', () => {
         if (!isMobileDrawer()) return;
@@ -674,17 +820,21 @@ map.on('load', async () => {
         const delta = drawerLastY - drawerStartY;
         const threshold = 50;
 
-        if (delta < -threshold) {
-            setDrawerState('drawer-expanded');
-        } else if (delta > threshold) {
-            if (sidebar.classList.contains('drawer-expanded')) {
-                setDrawerState('drawer-collapsed');
-            } else {
-                closeSidebar();
+        if (drawerDragActive) {
+            if (delta < -threshold) {
+                setDrawerState('drawer-expanded');
+            } else if (delta > threshold) {
+                if (sidebar.classList.contains('drawer-expanded')) {
+                    setDrawerState('drawer-collapsed');
+                } else {
+                    closeSidebar();
+                }
             }
         }
         drawerStartY = null;
         drawerLastY = null;
+        drawerDragActive = false;
+        drawerStartScrollTop = 0;
     });
 
     const urlCoords = parseCoordsFromUrl();
@@ -694,4 +844,8 @@ map.on('load', async () => {
         map.setZoom(6);
         openSidebarAt(lon, lat, { updateUrl: false });
     }
+    else {
+        openAboutSidebar();
+    }
 });
+
