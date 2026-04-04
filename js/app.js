@@ -620,6 +620,7 @@ map.on('load', async () => {
                 <a href="https://paypal.me/musa11971" target="_blank">
                     <img src="img/donate.png" alt="Donate through PayPal" style="max-width: 50%" />
                 </a>
+                <p>An experimental project by <a href="https://github.com/musa11971" target="_blank">@musa11971</a></p>
             </div>
         `;
 
