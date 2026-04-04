@@ -311,11 +311,12 @@ html, body { margin: 0; padding: 0; height: 100%; }
 
 .delta-marker {
     position: absolute;
-    top: 1px;
+    top: 6px;
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #10141b;
+    border: 2px solid #10141b;
+    background: #fff;
     transform: translateX(-50%);
     box-shadow: 0 2px 6px rgba(0,0,0,0.2);
 }
