@@ -386,7 +386,7 @@ function createSolarTileWorkerClient(polygonIndex) {
 
     const indexPayload = serializePolygonIndex(polygonIndex);
     for (let i = 0; i < workerCount; i++) {
-        const w = new Worker('/js/solar-tile-worker.js');
+        const w = new Worker('js/solar-tile-worker.js');
         const state = { worker: w, pending: new Map(), active: 0 };
 
         w.onmessage = event => {
@@ -489,7 +489,7 @@ function installSolarTileProtocol(polygonIndex) {
 
 map.on('load', async () => {
     const res = await fetch(
-        '/js/ne_10m_time_zones.geojson'
+        'js/ne_10m_time_zones.geojson'
     );
     const tzData = await res.json();
     const polygonIndex = buildPolygonIndex(tzData);
@@ -618,7 +618,7 @@ map.on('load', async () => {
                 <h4>Support the project</h4>
                 <p>If you enjoy Noon Shift, you can check out and star the project on <a href="https://github.com/musa11971/noon-shift" target="_blank">GitHub</a>, or support me with a small donation.</p>
                 <a href="https://paypal.me/musa11971" target="_blank">
-                    <img src="/img/donate.png" alt="Donate through PayPal" style="max-width: 50%" />
+                    <img src="img/donate.png" alt="Donate through PayPal" style="max-width: 50%" />
                 </a>
             </div>
         `;
