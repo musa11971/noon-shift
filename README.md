@@ -5,9 +5,11 @@
 
 Noon Shift is an interactive map that compares local clock time with true solar time around the world. It visualizes how far a region's civil time has drifted from the sun.
 
+<a href="https://musa11971.github.io/noon-shift" target="_blank"><img src=".github/open-web-app.png" width="300"></a>
+
 ### Why this project exists
 
-My curiosity for this topic started after watching a video by University of the Netherlands "[Why the Netherlands is in the wrong timezone (and why this is bad for your sleep)](https://www.youtube.com/watch?v=1ph_PqrUlRc])". They, in my opinion, very clearly broke down the matter of timezones and its relation to chronobiology. I roughly knew about DST (Daylight Saving Time), but was shocked to find out my local clock runs 1 hour and 40 minutes ahead of solar time. This, as expected, led me down the rabbit hole of trying to learn more about timezones, why they exist, solar time etc. 
+My curiosity for this topic started after watching a video by University of the Netherlands "[Why the Netherlands is in the wrong timezone (and why this is bad for your sleep)](https://www.youtube.com/watch?v=1ph_PqrUlRc)". They, in my opinion, very clearly broke down the matter of timezones and its relation to chronobiology. I roughly knew about DST (Daylight Saving Time), but was shocked to find out my local clock runs 1 hour and 40 minutes ahead of solar time. This, as expected, led me down the rabbit hole of trying to learn more about timezones, why they exist, solar time etc. 
 I set out to create a simple tool that visualizes these differences between clock time and true solar time; this became Noon Shift.
 
 ### Data and attribution
