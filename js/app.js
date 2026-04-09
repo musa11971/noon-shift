@@ -187,6 +187,11 @@ function lookupTimezoneAt(lon, lat, polygonIndex) {
     return null;
 }
 
+maplibregl.setRTLTextPlugin(
+    'js/mapbox-gl-rtl-text@0.3.0.js',
+    true
+);
+
 const map = new maplibregl.Map({
     style: 'https://tiles.openfreemap.org/styles/positron',
     center: [13, 25],
